@@ -27,6 +27,12 @@ _ATTR_RE = re.compile(
     r"""(?<![\w:.\-])(?P<name>[a-zA-Z_:][\w:.\-]*)(?P<eq>\s*=\s*)"""
     r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<uq>[^\s"'=<>`]+))"""
 )
+_CHUNK_RE = re.compile(
+    r"(?P<script><script\b(?:\"[^\"]*\"|'[^']*'|[^'\">])*>)(?P<body>.*?)(?P<close></script\s*>)"
+    r"|(?P<tag><[a-zA-Z][^\s/>]*(?:\"[^\"]*\"|'[^']*'|[^'\">])*>)",
+    re.I | re.S,
+)
+_TYPE_ATTR = re.compile(r"""(?<![\w-])type\s*=\s*["']?([^"'\s>]*)""", re.I)
 _STYLE_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.I | re.S)
 _CSS_URL = re.compile(r"""url\(\s*(?P<q>["']?)(?P<u>[^"')]*?)(?P=q)\s*\)""", re.I)
 _CSS_IMPORT = re.compile(r"""@import\s+(?P<q>["'])(?P<u>[^"']+)(?P=q)""", re.I)
@@ -40,6 +46,45 @@ _CSP_META = re.compile(
 _HEAD_OPEN = re.compile(r"<head(?:\s[^>]*)?>", re.I)
 _HTML_OPEN = re.compile(r"<html(?:\s[^>]*)?>", re.I)
 _DOCTYPE = re.compile(r"^\s*<!doctype[^>]*>", re.I)
+
+
+def _is_js(open_tag: str) -> bool:
+    m = _TYPE_ATTR.search(open_tag)
+    if not m or not m[1]:
+        return True
+    t = m[1].lower()
+    return t == "module" or "javascript" in t or "ecmascript" in t
+
+
+def _guarded(repl):
+    """Only substitute when the match is not the tail of a longer identifier."""
+
+    def f(m):
+        s, i = m.string, m.start()
+        if i and (s[i - 1].isalnum() or s[i - 1] in "_$."):
+            return m.group(0)
+        return repl(m) if callable(repl) else repl
+
+    return f
+
+
+def _guarded_bare(m):
+    s, i = m.string, m.start()
+    if i and (s[i - 1].isalnum() or s[i - 1] in "_$.\"'`/\\-"):
+        return m.group(0)
+    return "__hb$loc"
+
+
+# JS rewriting: make `location` report the real URL and defeat frame-busters.
+_J_WINTOP = re.compile(r"(?:window|self|globalThis)\.top(?![\w$])")
+_J_TOPLOC = re.compile(r"top\.location(?![\w$])")
+_J_CMP_A = re.compile(r"top(\s*[!=]==?\s*)(self|window)(?![\w$])")
+_J_CMP_B = re.compile(r"(self|window)(\s*[!=]==?\s*)top(?![\w$:])")
+_J_LOCQ = re.compile(r"(?:window|self|globalThis|document|parent)\s*\.\s*location(?![\w$])")
+_J_LOCBARE = re.compile(
+    r"location(?=\s*(?:\.\s*(?:href|origin|protocol|host|hostname|port|pathname|search|hash"
+    r"|assign|replace|reload|toString)(?![\w$])|=(?!=)|[,;)]))"
+)
 
 
 def to_proxy_url(prefix: str, parts: SplitResult) -> str:
@@ -101,6 +146,18 @@ class Rewriter:
             lambda m: f"{m[1]}{m[2]}{self.proxify(m[3])}", value
         )
 
+    # -- JavaScript ---------------------------------------------------
+    def js(self, code: str) -> str:
+        if "top" in code:
+            code = _J_WINTOP.sub(_guarded("window"), code)
+            code = _J_TOPLOC.sub(_guarded("window.location"), code)
+            code = _J_CMP_A.sub(_guarded(lambda m: "window" + m[1] + m[2]), code)
+            code = _J_CMP_B.sub(_guarded(lambda m: m[1] + m[2] + "window"), code)
+        if "location" in code:
+            code = _J_LOCQ.sub(_guarded("__hb$loc"), code)
+            code = _J_LOCBARE.sub(_guarded_bare, code)
+        return code
+
     # -- HTML ---------------------------------------------------------
     def _attr(self, m: re.Match) -> str:
         name = m["name"]
@@ -127,6 +184,13 @@ class Rewriter:
             return m.group(0)  # untouched: preserve original quoting byte-for-byte
         return f"{name}{m['eq']}{q}{new}{q}"
 
+    def _chunk(self, m: re.Match) -> str:
+        if m["script"] is not None:
+            open_tag = _ATTR_RE.sub(self._attr, m["script"])
+            body = self.js(m["body"]) if _is_js(m["script"]) else m["body"]
+            return open_tag + body + m["close"]
+        return _ATTR_RE.sub(self._attr, m["tag"])
+
     def html(self, text: str, shim_js: str, doc_url: str) -> str:
         text = text.lstrip("\ufeff")
         m = _BASE_TAG.search(text)
@@ -138,7 +202,7 @@ class Rewriter:
                 self.force_abs = True
             text = text[: m.start()] + text[m.end():]
         text = _CSP_META.sub("", text)
-        text = _TAG_RE.sub(lambda t: _ATTR_RE.sub(self._attr, t.group(0)), text)
+        text = _CHUNK_RE.sub(self._chunk, text)
         text = _STYLE_RE.sub(lambda s: s[1] + self.css(s[2]) + s[3], text)
 
         shim = build_shim_tag(shim_js, self.prefix, doc_url, self.base)

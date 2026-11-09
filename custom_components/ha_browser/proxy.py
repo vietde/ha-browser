@@ -35,6 +35,7 @@ _OUR_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Expose-Headers": "*",
+    "Cross-Origin-Resource-Policy": "cross-origin",
 }
 
 _DROP_REQ = {
@@ -50,6 +51,10 @@ _PASS_RESP = {
     "pragma",
 }
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
+_JS_TYPES = {
+    "application/javascript", "text/javascript", "application/x-javascript",
+    "application/ecmascript", "text/ecmascript",
+}
 _BODYLESS = {204, 304}
 
 
@@ -187,7 +192,7 @@ class BrowserProxyView(HomeAssistantView):
         ctype = resp.headers.get("Content-Type", "")
         mime = ctype.split(";")[0].strip().lower()
         rewritable = (
-            (mime in _HTML_TYPES or mime == "text/css")
+            (mime in _HTML_TYPES or mime == "text/css" or mime in _JS_TYPES)
             and request.method != "HEAD"
             and resp.status not in _BODYLESS
         )
@@ -205,6 +210,8 @@ class BrowserProxyView(HomeAssistantView):
                 text = _decode(b"".join(chunks), ctype)
                 if mime == "text/css":
                     text = rw.css(text)
+                elif mime in _JS_TYPES:
+                    text = rw.js(text)
                 else:
                     text = rw.html(text, runtime.shim_js, doc_url)
                 out.pop("ETag", None)

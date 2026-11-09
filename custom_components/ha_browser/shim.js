@@ -7,6 +7,7 @@
   var BASE = cfg.base;
   var REAL = cfg.url;
   var ORIGIN = location.origin;
+  var HOST = parent; // the panel; captured before window.parent is masked below
   var SKIP = /^(?:data|blob|javascript|about|mailto|tel|sms|file):/i;
 
   function inProxy(s) {
@@ -42,7 +43,7 @@
 
   function post(msg) {
     msg.__hb = 1;
-    try { parent.postMessage(msg, "*"); } catch (e) { /* not framed */ }
+    try { HOST.postMessage(msg, "*"); } catch (e) { /* not framed */ }
   }
 
   function guard(fn) { try { fn(); } catch (e) { /* never break the page */ } }
@@ -196,11 +197,12 @@
       var orig = History.prototype[fn];
       History.prototype[fn] = function (state, title, url) {
         if (url != null && url !== "") {
-          var real;
-          try { real = new URL(String(url), BASE).href; } catch (e) { real = null; }
-          if (real) {
+          var p = toProxy(url); // pages often pass back location.pathname: already proxied
+          var real = null;
+          try { real = fromProxy(p); } catch (e) { real = null; }
+          if (real && real.indexOf("http") === 0) {
             try {
-              orig.call(this, state, title, toProxy(real));
+              orig.call(this, state, title, p);
               BASE = REAL = real;
             } catch (e) {
               try { orig.call(this, state, title); } catch (e2) { /* ignore */ }
@@ -289,10 +291,62 @@
     }
   });
 
+  // ---- location / document emulation -----------------------------------
+  // Server-side JS rewriting maps `location` / `window.location` to __hb$loc.
+  function nav(v, replace) {
+    var str = String(v);
+    if (str.charAt(0) === "#") { location.hash = str.slice(1); return; }
+    var p = toProxy(str);
+    if (replace) location.replace(p); else location.assign(p);
+  }
+  var fakeLoc = {
+    assign: function (v) { nav(v); },
+    replace: function (v) { nav(v, true); },
+    reload: function () { location.reload(); },
+    toString: function () { return REAL; },
+    ancestorOrigins: []
+  };
+  ["protocol", "host", "hostname", "port", "pathname", "search", "origin"].forEach(function (k) {
+    Object.defineProperty(fakeLoc, k, {
+      enumerable: true,
+      get: function () { try { return new URL(REAL)[k]; } catch (e) { return ""; } },
+      set: function (v) {
+        if (k === "origin") return;
+        try { var u = new URL(REAL); u[k] = v; nav(u.href); } catch (e) { /* ignore */ }
+      }
+    });
+  });
+  Object.defineProperty(fakeLoc, "href", {
+    enumerable: true, get: function () { return REAL; }, set: function (v) { nav(v); }
+  });
+  Object.defineProperty(fakeLoc, "hash", {
+    enumerable: true,
+    get: function () { try { return new URL(REAL).hash; } catch (e) { return ""; } },
+    set: function (v) { var h = String(v); location.hash = h.charAt(0) === "#" ? h.slice(1) : h; }
+  });
+  guard(function () {
+    Object.defineProperty(window, "__hb$loc", {
+      configurable: true, get: function () { return fakeLoc; }, set: function (v) { nav(v); }
+    });
+  });
+  guard(function () {
+    Object.defineProperty(Document.prototype, "URL", { configurable: true, get: function () { return REAL; } });
+    Object.defineProperty(Document.prototype, "documentURI", { configurable: true, get: function () { return REAL; } });
+    Object.defineProperty(Document.prototype, "domain", {
+      configurable: true, set: function () {},
+      get: function () { try { return new URL(REAL).hostname; } catch (e) { return ""; } }
+    });
+    Object.defineProperty(Document.prototype, "referrer", { configurable: true, get: function () { return ""; } });
+  });
+  // Frame-buster checks (`window.parent !== window`) should see a top-level window.
+  guard(function () {
+    Object.defineProperty(window, "parent", { configurable: true, get: function () { return window; } });
+  });
+
   // ---- commands from the panel ------------------------------------------
   window.addEventListener("message", function (e) {
     var d = e.data;
-    if (e.source !== parent || !d || d.__hb_cmd !== 1) return;
+    if (e.source !== HOST || !d || d.__hb_cmd !== 1) return;
     if (d.cmd === "back") history.back();
     else if (d.cmd === "forward") history.forward();
     else if (d.cmd === "reload") location.reload();

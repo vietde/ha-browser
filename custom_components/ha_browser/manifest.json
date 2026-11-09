@@ -10,5 +10,5 @@
   "issue_tracker": "https://github.com/YOUR_USER/ha_browser/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.1.0"
+  "version": "0.1.2"
 }

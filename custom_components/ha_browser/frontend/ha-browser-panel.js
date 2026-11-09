@@ -183,7 +183,7 @@ class HaBrowserPanel extends HTMLElement {
   _newTab(url, title = "", activate = true) {
     const iframe = document.createElement("iframe");
     iframe.setAttribute("sandbox", SANDBOX);
-    iframe.setAttribute("allow", "fullscreen; autoplay; clipboard-write");
+    iframe.setAttribute("allow", "fullscreen; autoplay; encrypted-media; picture-in-picture; clipboard-write");
     iframe.setAttribute("referrerpolicy", "no-referrer");
     iframe.classList.add("hidden");
     const tab = { id: this._nextId++, url: null, title, iframe };
