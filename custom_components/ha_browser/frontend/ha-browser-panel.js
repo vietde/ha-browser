@@ -47,6 +47,7 @@ class HaBrowserPanel extends HTMLElement {
     this._session = null;
     this._hass = null;
     this._nextId = 1;
+    this._retryDelayMs = 2000; // delay between session-fetch retries (tests may shorten it)
     this._onMessage = this._onMessage.bind(this);
   }
 
@@ -101,10 +102,26 @@ class HaBrowserPanel extends HTMLElement {
     });
     this._omni.addEventListener("focus", () => this._omni.select());
 
-    try {
-      await this._refreshSession();
-    } catch (err) {
-      this._home.textContent = "HA Browser could not start: " + (err && err.message ? err.message : err);
+    // The session is the panel's lifeline: without it no URL can load.
+    // A fresh HA restart can leave the integration still setting up when
+    // the panel opens, so retry a few times before giving up — and never
+    // leave the address bar in a state where Enter throws (see _normalize).
+    clearInterval(this._keepalive);
+    let lastErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { await this._refreshSession(); lastErr = null; break; }
+      catch (err) { lastErr = err; await new Promise((r) => setTimeout(r, this._retryDelayMs)); }
+    }
+    if (lastErr) {
+      const err = lastErr;
+      this._home.textContent = "";
+      const p = document.createElement("p");
+      p.textContent = "HA Browser could not start: " + (err && err.message ? err.message : err) +
+        " — the browser session did not answer. It usually works after a retry.";
+      const b = document.createElement("button");
+      b.textContent = "Retry";
+      b.addEventListener("click", () => this._init());
+      this._home.append(p, b);
       return;
     }
     this._restore();
@@ -133,6 +150,10 @@ class HaBrowserPanel extends HTMLElement {
   _normalize(input) {
     input = (input || "").trim();
     if (!input) return null;
+    // No session yet (still starting up, or the session fetch failed):
+    // return null so Enter does nothing instead of throwing on
+    // this._session.search_url and leaving the page black.
+    if (!this._session) return null;
     if (/^https?:\/\//i.test(input)) return input;
     if (/^[a-z][a-z0-9+.-]*:/i.test(input) && !/^[\w.-]+:\d+/.test(input)) return null; // other schemes
     const host = input.split(/[/?#]/)[0].replace(/:\d+$/, "");
@@ -220,6 +241,7 @@ class HaBrowserPanel extends HTMLElement {
 
   _load(tab, real) {
     if (!this._validUrl(real)) return;
+    if (!this._session) return; // _src needs the session prefix; _normalize already guards Enter
     tab.url = real;
     tab.title = "";
     tab.iframe.src = this._src(real);
