@@ -16,7 +16,7 @@ from .const import (
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "ha_browser/session", vol.Optional("token"): str}
+    {vol.Required("type"): "ha_browser/session", vol.Optional("token"): vol.Any(str, None)}
 )
 @websocket_api.async_response
 async def ws_session(hass: HomeAssistant, connection, msg) -> None:

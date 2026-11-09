@@ -112,8 +112,10 @@ class HaBrowserPanel extends HTMLElement {
   }
 
   async _refreshSession() {
-    const old = this._session && this._session.token;
-    const s = await this._hass.callWS({ type: "ha_browser/session", token: old });
+    const old = this._session ? this._session.token : undefined;
+    const req = { type: "ha_browser/session" };
+    if (old) req.token = old;
+    const s = await this._hass.callWS(req);
     this._session = s;
     if (old && old !== s.token) {
       // Session expired server-side: re-point every live tab at the new token.
