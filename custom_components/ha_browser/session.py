@@ -1,7 +1,8 @@
 """Browser sessions: opaque path tokens, per-session cookie jars and clients."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 import secrets
 import time
 from typing import Any
@@ -23,6 +24,7 @@ class BrowserSession:
     user_id: str
     last_used: float
     http: aiohttp.ClientSession
+    trace: deque = field(default_factory=lambda: deque(maxlen=80))
 
 
 class SessionManager:
@@ -38,8 +40,8 @@ class SessionManager:
         self._connector = aiohttp.TCPConnector(
             resolver=PolicyResolver(policy),
             ssl=client_context() if verify_ssl else client_context_no_verify(),
-            limit=200,
-            limit_per_host=20,
+            limit=400,
+            limit_per_host=60,
         )
 
     def create(self, user_id: str) -> BrowserSession:

@@ -31,7 +31,7 @@ from .const import (
 from .proxy import BrowserProxyView
 from .security import HostPolicy
 from .session import BrowserRuntime, SessionManager
-from .ws_commands import ws_session
+from .ws_commands import ws_debug, ws_session
 
 _DIR = Path(__file__).parent
 
@@ -63,6 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         hass.http.register_view(BrowserProxyView(hass))
         websocket_api.async_register_command(hass, ws_session)
+        websocket_api.async_register_command(hass, ws_debug)
         data["registered"] = True
 
     await panel_custom.async_register_panel(

@@ -348,6 +348,19 @@ class HaBrowserPanel extends HTMLElement {
     } catch (err) {
       this._log("diag", "fetch failed: " + (err && err.message ? err.message : err));
     }
+    try {
+      const { items } = await this._hass.callWS({ type: "ha_browser/debug", token: this._session.token });
+      const pending = items.filter((i) => i.ms === null);
+      const bad = items.filter((i) => i.ms !== null && (i.e || (i.s !== null && i.s >= 400) || i.s === null));
+      this._log("diag", `proxy: ${items.length} recent requests, ${pending.length} in flight, ${bad.length} failed`);
+      const line = (i) => `${i.ms === null ? "PENDING " + (i.age / 1000).toFixed(1) + "s" : i.ms + "ms"} ${i.s || "-"} ${i.m} ${i.u}${i.e ? "  ERR: " + i.e : ""}`;
+      pending.slice(0, 15).forEach((i) => this._log("diag", line(i)));
+      bad.slice(-15).forEach((i) => this._log("diag", line(i)));
+      items.filter((i) => i.ms !== null).sort((a, b) => b.ms - a.ms).slice(0, 5)
+        .forEach((i) => this._log("diag", "slow: " + line(i)));
+    } catch (err) {
+      this._log("diag", "trace unavailable: " + (err && err.message ? err.message : err));
+    }
   }
 
   // Scale pages that are wider than the panel so they fit without sideways scrolling.

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DOMAIN = "ha_browser"
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 
 PANEL_URL_PATH = "ha-browser"
 PANEL_ELEMENT = "ha-browser-panel"

@@ -11,6 +11,7 @@ import asyncio
 import html as html_lib
 import logging
 import re
+import time
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -161,7 +162,26 @@ class BrowserProxyView(HomeAssistantView):
         if "Origin" in request.headers:
             headers["Origin"] = f"{scheme}://{authority}"
 
+        entry = {
+            "t": time.monotonic(), "m": request.method,
+            "u": f"{authority}/{rest}"[:150], "s": None, "ms": None, "e": None, "ct": "",
+        }
+        sess.trace.append(entry)
+        request["hb_entry"] = entry
+        try:
+            return await self._forward(request, sess, runtime, token, scheme, authority, url, headers)
+        except asyncio.CancelledError:
+            entry["e"] = "client aborted"
+            raise
+        finally:
+            entry["ms"] = int((time.monotonic() - entry["t"]) * 1000)
+
+    get = post = put = patch = delete = head = options = _handle
+
+    async def _forward(self, request, sess, runtime, token, scheme, authority, url, headers):
+        entry = request["hb_entry"]
         if request.headers.get("Upgrade", "").lower() == "websocket":
+            entry["m"] = "WS"
             return await self._proxy_ws(request, sess, url, scheme, authority, headers)
 
         body = await request.read() if request.body_exists else None
@@ -172,10 +192,9 @@ class BrowserProxyView(HomeAssistantView):
             ) as resp:
                 return await self._relay(request, resp, runtime, token, str(url))
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            entry["e"] = str(err)[:120]
             _LOGGER.debug("Upstream error for %s: %s", url, err)
             return _page(502, "Could not reach site", f"{authority}: {err}")
-
-    get = post = put = patch = delete = head = options = _handle
 
     # ------------------------------------------------------------------
     async def _relay(self, request, resp, runtime, token, doc_url):
@@ -192,6 +211,9 @@ class BrowserProxyView(HomeAssistantView):
         ctype = resp.headers.get("Content-Type", "")
         mime = ctype.split(";")[0].strip().lower()
         _LOGGER.debug("%s %s -> %s %s", request.method, doc_url, resp.status, mime)
+        entry = request.get("hb_entry")
+        if entry is not None:
+            entry["s"], entry["ct"] = resp.status, mime
         rewritable = (
             (mime in _HTML_TYPES or mime == "text/css" or mime in _JS_TYPES)
             and request.method != "HEAD"

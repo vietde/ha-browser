@@ -404,6 +404,14 @@
         ", text length=" + (b ? b.innerText.length : 0) +
         ", html visibility=" + getComputedStyle(document.documentElement).visibility);
     });
+    document.addEventListener("DOMContentLoaded", function () { log("info", "DOMContentLoaded"); });
+    [3000, 8000, 15000].forEach(function (ms) {
+      setTimeout(function () {
+        var b = document.body;
+        log("info", "t+" + ms / 1000 + "s readyState=" + document.readyState +
+          ", body text length=" + (b ? b.innerText.length : -1));
+      }, ms);
+    });
     window.addEventListener("resize", function () { lastW = 0; setTimeout(reportSize, 200); });
     window.addEventListener("pagehide", function () { post({ type: "reset" }); });
   });
