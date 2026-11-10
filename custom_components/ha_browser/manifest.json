@@ -3,12 +3,7 @@
   "name": "HA Browser",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": [
-    "http",
-    "frontend",
-    "panel_custom",
-    "websocket_api"
-  ],
+  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
   "documentation": "https://github.com/vietde/ha-browser",
   "integration_type": "service",
   "iot_class": "calculated",

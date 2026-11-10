@@ -191,6 +191,7 @@ class BrowserProxyView(HomeAssistantView):
 
         ctype = resp.headers.get("Content-Type", "")
         mime = ctype.split(";")[0].strip().lower()
+        _LOGGER.debug("%s %s -> %s %s", request.method, doc_url, resp.status, mime)
         rewritable = (
             (mime in _HTML_TYPES or mime == "text/css" or mime in _JS_TYPES)
             and request.method != "HEAD"

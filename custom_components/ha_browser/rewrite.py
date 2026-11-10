@@ -79,7 +79,7 @@ def _guarded_bare(m):
 _J_WINTOP = re.compile(r"(?:window|self|globalThis)\.top(?![\w$])")
 _J_TOPLOC = re.compile(r"top\.location(?![\w$])")
 _J_CMP_A = re.compile(r"top(\s*[!=]==?\s*)(self|window)(?![\w$])")
-_J_CMP_B = re.compile(r"(self|window)(\s*[!=]==?\s*)top(?![\w$:])")
+_J_CMP_B = re.compile(r"((?:window\.)?(?:self|window))(\s*[!=]==?\s*)top(?![\w$:])")
 _J_LOCQ = re.compile(r"(?:window|self|globalThis|document|parent)\s*\.\s*location(?![\w$])")
 _J_LOCBARE = re.compile(
     r"location(?=\s*(?:\.\s*(?:href|origin|protocol|host|hostname|port|pathname|search|hash"

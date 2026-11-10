@@ -283,12 +283,25 @@
     });
   });
 
+  // Sandboxed (opaque-origin) pages THROW on these accessors, which crashes many
+  // modern sites at boot. Replace them with harmless stand-ins.
   guard(function () {
-    if (navigator.serviceWorker) {
-      navigator.serviceWorker.register = function () {
-        return Promise.reject(new Error("Service workers are disabled in HA Browser"));
-      };
-    }
+    var swStub = {
+      register: function () { return Promise.reject(new Error("Service workers are disabled in HA Browser")); },
+      getRegistration: function () { return Promise.resolve(undefined); },
+      getRegistrations: function () { return Promise.resolve([]); },
+      ready: new Promise(function () {}),
+      controller: null,
+      addEventListener: function () {}, removeEventListener: function () {}
+    };
+    Object.defineProperty(Navigator.prototype, "serviceWorker", {
+      configurable: true, get: function () { return swStub; }
+    });
+  });
+  ["indexedDB", "caches", "openDatabase"].forEach(function (name) {
+    guard(function () {
+      Object.defineProperty(window, name, { configurable: true, get: function () { return undefined; } });
+    });
   });
 
   // ---- location / document emulation -----------------------------------
@@ -341,6 +354,58 @@
   // Frame-buster checks (`window.parent !== window`) should see a top-level window.
   guard(function () {
     Object.defineProperty(window, "parent", { configurable: true, get: function () { return window; } });
+  });
+
+  // ---- diagnostics + auto-fit sizing -----------------------------------------
+  var logCount = 0;
+  function log(level, msg) {
+    if (logCount++ > 150) return;
+    post({ type: "log", level: level, msg: String(msg).slice(0, 500) });
+  }
+  guard(function () {
+    window.addEventListener("error", function (e) {
+      var t = e.target;
+      if (t && t !== window && (t.src || t.href)) {
+        log("res", "failed to load " + fromProxy(t.src || t.href));
+      } else {
+        log("error", (e.message || "error") + " @ " + fromProxy(e.filename || "") + ":" + (e.lineno || ""));
+      }
+    }, true);
+    window.addEventListener("unhandledrejection", function (e) {
+      var r = e.reason;
+      log("promise", (r && (r.stack || r.message)) || r);
+    });
+    document.addEventListener("securitypolicyviolation", function (e) {
+      log("csp", e.violatedDirective + " blocked " + e.blockedURI);
+    });
+    ["error", "warn"].forEach(function (k) {
+      var o = console[k];
+      console[k] = function () {
+        try { log(k, Array.prototype.slice.call(arguments).map(String).join(" ")); } catch (e) { /* ignore */ }
+        return o.apply(console, arguments);
+      };
+    });
+    log("info", "shim active for " + REAL);
+  });
+
+  var lastW = 0;
+  function reportSize() {
+    try {
+      var de = document.documentElement, b = document.body;
+      var w = Math.max(de ? de.scrollWidth : 0, b ? b.scrollWidth : 0);
+      if (w && w !== lastW) { lastW = w; post({ type: "size", w: w }); }
+    } catch (e) { /* ignore */ }
+  }
+  guard(function () {
+    window.addEventListener("load", function () {
+      [0, 400, 1500, 4000].forEach(function (ms) { setTimeout(reportSize, ms); });
+      var b = document.body;
+      log("info", "loaded: body display=" + (b ? getComputedStyle(b).display : "none") +
+        ", text length=" + (b ? b.innerText.length : 0) +
+        ", html visibility=" + getComputedStyle(document.documentElement).visibility);
+    });
+    window.addEventListener("resize", function () { lastW = 0; setTimeout(reportSize, 200); });
+    window.addEventListener("pagehide", function () { post({ type: "reset" }); });
   });
 
   // ---- commands from the panel ------------------------------------------

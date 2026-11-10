@@ -34,6 +34,12 @@ iframe.hidden, .home.hidden { display:none; }
 .bm .ic { width:32px; height:32px; border-radius:50%; background:var(--primary-color); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:600; }
 .bm .l { font-size:12px; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bm .rm { position:absolute; top:2px; right:2px; min-width:20px; height:20px; font-size:12px; opacity:.5; }
+.root { padding-bottom:env(safe-area-inset-bottom); box-sizing:border-box; }
+.dbg { height:40%; display:flex; flex-direction:column; border-top:1px solid var(--divider-color); background:var(--card-background-color); }
+.dbg.hidden { display:none; }
+.dbghead { display:flex; gap:4px; padding:4px 8px; border-bottom:1px solid var(--divider-color); }
+.dbghead button { font-size:12px; height:28px; padding:0 10px; border:1px solid var(--divider-color); }
+.dbglog { flex:1; margin:0; overflow:auto; font:11px/1.4 monospace; white-space:pre-wrap; word-break:break-all; padding:6px 8px; user-select:text; }
 .menu { display:none; }
 :host([narrow]) .menu { display:inline-flex; }
 `;
@@ -47,7 +53,7 @@ class HaBrowserPanel extends HTMLElement {
     this._session = null;
     this._hass = null;
     this._nextId = 1;
-    this._retryDelayMs = 2000; // delay between session-fetch retries (tests may shorten it)
+    this._logs = [];
     this._onMessage = this._onMessage.bind(this);
   }
 
@@ -63,6 +69,7 @@ class HaBrowserPanel extends HTMLElement {
   disconnectedCallback() {
     window.removeEventListener("message", this._onMessage);
     clearInterval(this._keepalive);
+    if (this._ro) this._ro.disconnect();
   }
 
   // ---------------------------------------------------------------- setup
@@ -83,15 +90,32 @@ class HaBrowserPanel extends HTMLElement {
           <input class="omni" spellcheck="false" autocapitalize="off" autocomplete="off"
                  placeholder="Search or enter address">
           <button data-act="bookmark" title="Bookmark this page"><ha-icon icon="mdi:star-outline"></ha-icon></button>
+          <button data-act="debug" title="Diagnostics"><ha-icon icon="mdi:bug-outline"></ha-icon></button>
         </div>
         <div class="progress"></div>
         <div class="content"><div class="home"></div><div class="frames"></div></div>
+        <div class="dbg hidden">
+          <div class="dbghead">
+            <button data-act="diagnose">Diagnose page</button>
+            <button data-act="dbgcopy">Copy</button>
+            <button data-act="dbgclear">Clear</button>
+            <button data-act="debug">Close</button>
+          </div>
+          <pre class="dbglog"></pre>
+        </div>
       </div>`;
     this._tabList = $.querySelector(".tablist");
     this._omni = $.querySelector(".omni");
     this._home = $.querySelector(".home");
     this._frames = $.querySelector(".frames");
     this._progress = $.querySelector(".progress");
+    this._content = $.querySelector(".content");
+    this._dbg = $.querySelector(".dbg");
+    this._dbgLog = $.querySelector(".dbglog");
+    if (window.ResizeObserver) {
+      this._ro = new ResizeObserver(() => this._tabs.forEach((t) => t.fitW && this._fit(t)));
+      this._ro.observe(this._content);
+    }
 
     $.querySelector(".root").addEventListener("click", (e) => {
       const b = e.target.closest("button[data-act]");
@@ -102,26 +126,10 @@ class HaBrowserPanel extends HTMLElement {
     });
     this._omni.addEventListener("focus", () => this._omni.select());
 
-    // The session is the panel's lifeline: without it no URL can load.
-    // A fresh HA restart can leave the integration still setting up when
-    // the panel opens, so retry a few times before giving up — and never
-    // leave the address bar in a state where Enter throws (see _normalize).
-    clearInterval(this._keepalive);
-    let lastErr = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try { await this._refreshSession(); lastErr = null; break; }
-      catch (err) { lastErr = err; await new Promise((r) => setTimeout(r, this._retryDelayMs)); }
-    }
-    if (lastErr) {
-      const err = lastErr;
-      this._home.textContent = "";
-      const p = document.createElement("p");
-      p.textContent = "HA Browser could not start: " + (err && err.message ? err.message : err) +
-        " — the browser session did not answer. It usually works after a retry.";
-      const b = document.createElement("button");
-      b.textContent = "Retry";
-      b.addEventListener("click", () => this._init());
-      this._home.append(p, b);
+    try {
+      await this._refreshSession();
+    } catch (err) {
+      this._home.textContent = "HA Browser could not start: " + (err && err.message ? err.message : err);
       return;
     }
     this._restore();
@@ -150,10 +158,6 @@ class HaBrowserPanel extends HTMLElement {
   _normalize(input) {
     input = (input || "").trim();
     if (!input) return null;
-    // No session yet (still starting up, or the session fetch failed):
-    // return null so Enter does nothing instead of throwing on
-    // this._session.search_url and leaving the page black.
-    if (!this._session) return null;
     if (/^https?:\/\//i.test(input)) return input;
     if (/^[a-z][a-z0-9+.-]*:/i.test(input) && !/^[\w.-]+:\d+/.test(input)) return null; // other schemes
     const host = input.split(/[/?#]/)[0].replace(/:\d+$/, "");
@@ -241,7 +245,7 @@ class HaBrowserPanel extends HTMLElement {
 
   _load(tab, real) {
     if (!this._validUrl(real)) return;
-    if (!this._session) return; // _src needs the session prefix; _normalize already guards Enter
+    this._unfit(tab);
     tab.url = real;
     tab.title = "";
     tab.iframe.src = this._src(real);
@@ -287,6 +291,12 @@ class HaBrowserPanel extends HTMLElement {
         else { tab.url = null; tab.title = ""; tab.iframe.src = "about:blank"; this._activate(tab.id); this._omni.focus(); }
         break;
       case "bookmark": this._toggleBookmark(); break;
+      case "debug": this._dbg.classList.toggle("hidden"); break;
+      case "diagnose": this._diagnose(); break;
+      case "dbgclear": this._logs = []; this._dbgLog.textContent = ""; break;
+      case "dbgcopy":
+        if (navigator.clipboard) navigator.clipboard.writeText(this._logs.join("\n")).catch(() => {});
+        break;
     }
   }
 
@@ -296,6 +306,9 @@ class HaBrowserPanel extends HTMLElement {
     if (!d || d.__hb !== 1) return;
     const tab = this._tabs.find((t) => t.iframe.contentWindow === e.source);
     if (!tab) return; // only trust our own frames
+    if (d.type === "log") { this._log(String(d.level).slice(0, 10), `[${this._host(tab)}] ${String(d.msg).slice(0, 500)}`); return; }
+    if (d.type === "size") { this._onSize(tab, Number(d.w)); return; }
+    if (d.type === "reset") { this._unfit(tab); return; }
     if (d.type === "nav" && typeof d.url === "string" && this._validUrl(d.url)) {
       tab.url = d.url;
       tab.title = typeof d.title === "string" ? d.title.slice(0, 200) : "";
@@ -306,6 +319,57 @@ class HaBrowserPanel extends HTMLElement {
       this._newTab(d.url);
     }
   }
+
+  // ---------------------------------------------------------------- diagnostics + fit
+  _host(tab) { try { return new URL(tab.url).host; } catch (_) { return "?"; } }
+
+  _log(level, msg) {
+    this._logs.push(`[${level}] ${msg}`);
+    if (this._logs.length > 300) this._logs.shift();
+    if (this._dbgLog) {
+      this._dbgLog.textContent = this._logs.join("\n");
+      this._dbgLog.scrollTop = this._dbgLog.scrollHeight;
+    }
+  }
+
+  async _diagnose() {
+    this._dbg.classList.remove("hidden");
+    const tab = this._activeTab();
+    if (!tab || !tab.url) { this._log("diag", "No page loaded in this tab."); return; }
+    const r0 = tab.iframe.getBoundingClientRect();
+    this._log("diag", `frame ${Math.round(r0.width)}x${Math.round(r0.height)}, hidden=${tab.iframe.classList.contains("hidden")}, fitW=${tab.fitW || 0}`);
+    this._log("diag", `Fetching ${tab.url} through the proxy...`);
+    try {
+      const r = await fetch(this._src(tab.url), { credentials: "omit" });
+      const text = await r.text();
+      const m = /<title[^>]*>([^<]*)/i.exec(text);
+      this._log("diag", `HTTP ${r.status}, ${r.headers.get("content-type") || "?"}, ${text.length} chars, title: ${m ? m[1].trim().slice(0, 80) : "(none)"}, shim injected: ${text.includes('"prefix"') ? "yes" : "no"}`);
+      this._log("diag", "start of body: " + text.replace(/\s+/g, " ").slice(0, 300));
+    } catch (err) {
+      this._log("diag", "fetch failed: " + (err && err.message ? err.message : err));
+    }
+  }
+
+  // Scale pages that are wider than the panel so they fit without sideways scrolling.
+  _onSize(tab, w) {
+    if (!Number.isFinite(w) || w < 200 || w > 6000) return;
+    if (tab.fitW && w <= tab.fitW * 1.02) return; // already fitted
+    const cw = this._content.clientWidth;
+    if (!tab.fitW && !(w > cw * 1.05)) return;    // no horizontal overflow
+    tab.fitW = w;
+    this._fit(tab);
+  }
+
+  _fit(tab) {
+    const cw = this._content.clientWidth, ch = this._content.clientHeight;
+    if (!tab.fitW || !cw) return;
+    if (tab.fitW <= cw * 1.02) { this._unfit(tab); return; }
+    const scale = Math.max(cw / tab.fitW, 0.35);
+    tab.iframe.style.cssText =
+      `right:auto;bottom:auto;width:${cw / scale}px;height:${ch / scale}px;transform:scale(${scale});transform-origin:0 0;`;
+  }
+
+  _unfit(tab) { tab.fitW = 0; tab.iframe.style.cssText = ""; }
 
   // ---------------------------------------------------------------- rendering
   _renderTabs() {
