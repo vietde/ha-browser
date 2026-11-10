@@ -1,4 +1,5 @@
 /* HA Browser panel: tabs, address bar and bookmarks around sandboxed proxy iframes. */
+const PANEL_VERSION = "0.1.6";
 const LS_TABS = "ha_browser_tabs_v1";
 const LS_BM = "ha_browser_bookmarks_v1";
 const SANDBOX =
@@ -70,6 +71,7 @@ class HaBrowserPanel extends HTMLElement {
     window.removeEventListener("message", this._onMessage);
     clearInterval(this._keepalive);
     if (this._ro) this._ro.disconnect();
+    clearInterval(this._watchdog);
   }
 
   // ---------------------------------------------------------------- setup
@@ -96,7 +98,7 @@ class HaBrowserPanel extends HTMLElement {
         <div class="content"><div class="home"></div><div class="frames"></div></div>
         <div class="dbg hidden">
           <div class="dbghead">
-            <button data-act="diagnose">Diagnose page</button>
+            <button data-act="diagnose">Diagnose page (10s)</button>
             <button data-act="dbgcopy">Copy</button>
             <button data-act="dbgclear">Clear</button>
             <button data-act="debug">Close</button>
@@ -112,6 +114,8 @@ class HaBrowserPanel extends HTMLElement {
     this._content = $.querySelector(".content");
     this._dbg = $.querySelector(".dbg");
     this._dbgLog = $.querySelector(".dbglog");
+    this._log("info", `panel v${PANEL_VERSION} | ${navigator.userAgent.slice(0, 100)}`);
+    this._watchdog = setInterval(() => this._checkFrozen(), 3000);
     if (window.ResizeObserver) {
       this._ro = new ResizeObserver(() => this._tabs.forEach((t) => t.fitW && this._fit(t)));
       this._ro.observe(this._content);
@@ -246,6 +250,8 @@ class HaBrowserPanel extends HTMLElement {
   _load(tab, real) {
     if (!this._validUrl(real)) return;
     this._unfit(tab);
+    tab.hb = 0;
+    tab.frozen = false;
     tab.url = real;
     tab.title = "";
     tab.iframe.src = this._src(real);
@@ -307,6 +313,7 @@ class HaBrowserPanel extends HTMLElement {
     const tab = this._tabs.find((t) => t.iframe.contentWindow === e.source);
     if (!tab) return; // only trust our own frames
     if (d.type === "log") { this._log(String(d.level).slice(0, 10), `[${this._host(tab)}] ${String(d.msg).slice(0, 500)}`); return; }
+    if (d.type === "hb") { tab.hb = Date.now(); return; }
     if (d.type === "size") { this._onSize(tab, Number(d.w)); return; }
     if (d.type === "reset") { this._unfit(tab); return; }
     if (d.type === "nav" && typeof d.url === "string" && this._validUrl(d.url)) {
@@ -336,6 +343,8 @@ class HaBrowserPanel extends HTMLElement {
     this._dbg.classList.remove("hidden");
     const tab = this._activeTab();
     if (!tab || !tab.url) { this._log("diag", "No page loaded in this tab."); return; }
+    this._log("diag", "Waiting 10s for the page to settle. Keep this tab open, then tap Copy...");
+    await new Promise((res) => setTimeout(res, 10000));
     const r0 = tab.iframe.getBoundingClientRect();
     this._log("diag", `frame ${Math.round(r0.width)}x${Math.round(r0.height)}, hidden=${tab.iframe.classList.contains("hidden")}, fitW=${tab.fitW || 0}`);
     this._log("diag", `Fetching ${tab.url} through the proxy...`);
@@ -348,6 +357,10 @@ class HaBrowserPanel extends HTMLElement {
     } catch (err) {
       this._log("diag", "fetch failed: " + (err && err.message ? err.message : err));
     }
+    await this._trace();
+  }
+
+  async _trace() {
     try {
       const { items } = await this._hass.callWS({ type: "ha_browser/debug", token: this._session.token });
       const pending = items.filter((i) => i.ms === null);
@@ -361,6 +374,23 @@ class HaBrowserPanel extends HTMLElement {
     } catch (err) {
       this._log("diag", "trace unavailable: " + (err && err.message ? err.message : err));
     }
+  }
+
+  _checkFrozen() {
+    const now = Date.now();
+    this._tabs.forEach((t) => {
+      if (!t.url || !t.hb) return;
+      const gap = now - t.hb;
+      if (gap > 7000 && !t.frozen) {
+        t.frozen = true;
+        this._log("FROZEN", `[${this._host(t)}] no heartbeat for ${Math.round(gap / 1000)}s: the page's JavaScript is blocked (busy loop or synchronous request) or has crashed`);
+        this._dbg.classList.remove("hidden");
+        this._trace();
+      } else if (gap < 4000 && t.frozen) {
+        t.frozen = false;
+        this._log("info", `[${this._host(t)}] page is responsive again`);
+      }
+    });
   }
 
   // Scale pages that are wider than the panel so they fit without sideways scrolling.

@@ -385,7 +385,31 @@
         return o.apply(console, arguments);
       };
     });
-    log("info", "shim active for " + REAL);
+    log("info", "shim v0.1.6 active for " + REAL);
+  });
+
+  function snapshot(ms) {
+    try {
+      var de = document.documentElement, b = document.body;
+      var hs = getComputedStyle(de), bs = b ? getComputedStyle(b) : null;
+      var r = b ? b.getBoundingClientRect() : { width: 0, height: 0 };
+      var res = window.performance && performance.getEntriesByType
+        ? performance.getEntriesByType("resource").length : -1;
+      log("info", "t+" + ms / 1000 + "s state=" + document.readyState +
+        " viewport=" + window.innerWidth + "x" + window.innerHeight +
+        " body=" + Math.round(r.width) + "x" + Math.round(r.height) +
+        " children=" + (b ? b.children.length : -1) +
+        " text=" + (b ? b.innerText.length : -1) +
+        " html[disp=" + hs.display + ",vis=" + hs.visibility + ",op=" + hs.opacity + ",bg=" + hs.backgroundColor + "]" +
+        " body[disp=" + (bs && bs.display) + ",vis=" + (bs && bs.visibility) + ",op=" + (bs && bs.opacity) +
+        ",bg=" + (bs && bs.backgroundColor) + "] resources=" + res);
+      if (b && ms === 3000) log("info", "text sample: " + b.innerText.replace(/\s+/g, " ").slice(0, 160));
+    } catch (e) { log("error", "snapshot failed: " + e); }
+  }
+  // Heartbeat: lets the panel detect a frozen page (blocked JS thread).
+  guard(function () {
+    post({ type: "hb" });
+    setInterval(function () { post({ type: "hb" }); }, 2000);
   });
 
   var lastW = 0;
@@ -405,12 +429,8 @@
         ", html visibility=" + getComputedStyle(document.documentElement).visibility);
     });
     document.addEventListener("DOMContentLoaded", function () { log("info", "DOMContentLoaded"); });
-    [3000, 8000, 15000].forEach(function (ms) {
-      setTimeout(function () {
-        var b = document.body;
-        log("info", "t+" + ms / 1000 + "s readyState=" + document.readyState +
-          ", body text length=" + (b ? b.innerText.length : -1));
-      }, ms);
+    [1000, 3000, 8000, 15000].forEach(function (ms) {
+      setTimeout(function () { snapshot(ms); }, ms);
     });
     window.addEventListener("resize", function () { lastW = 0; setTimeout(reportSize, 200); });
     window.addEventListener("pagehide", function () { post({ type: "reset" }); });
