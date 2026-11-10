@@ -80,6 +80,9 @@ _J_WINTOP = re.compile(r"(?:window|self|globalThis)\.top(?![\w$])")
 _J_TOPLOC = re.compile(r"top\.location(?![\w$])")
 _J_CMP_A = re.compile(r"top(\s*[!=]==?\s*)(self|window)(?![\w$])")
 _J_CMP_B = re.compile(r"((?:window\.)?(?:self|window))(\s*[!=]==?\s*)top(?![\w$:])")
+# ES module specifiers written as root-relative / absolute string literals.
+_J_IMPORT_LIT = re.compile(r"""(\bimport\s*\(\s*)(["'])(/(?!/)[^"'\\]*|https?://[^"'\\]*)\2""")
+_J_FROM_LIT = re.compile(r"""(\b(?:from|import)\s*)(["'])(/(?!/)[^"'\\]*|https?://[^"'\\]*)\2""")
 _J_LOCQ = re.compile(r"(?:window|self|globalThis|document|parent)\s*\.\s*location(?![\w$])")
 _J_LOCBARE = re.compile(
     r"location(?=\s*(?:\.\s*(?:href|origin|protocol|host|hostname|port|pathname|search|hash"
@@ -153,6 +156,9 @@ class Rewriter:
             code = _J_TOPLOC.sub(_guarded("window.location"), code)
             code = _J_CMP_A.sub(_guarded(lambda m: "window" + m[1] + m[2]), code)
             code = _J_CMP_B.sub(_guarded(lambda m: m[1] + m[2] + "window"), code)
+        if "import" in code or "from" in code:
+            code = _J_IMPORT_LIT.sub(lambda m: m[1] + m[2] + self.proxify(m[3]) + m[2], code)
+            code = _J_FROM_LIT.sub(lambda m: m[1] + m[2] + self.proxify(m[3]) + m[2], code)
         if "location" in code:
             code = _J_LOCQ.sub(_guarded("__hb$loc"), code)
             code = _J_LOCBARE.sub(_guarded_bare, code)
@@ -187,6 +193,12 @@ class Rewriter:
     def _chunk(self, m: re.Match) -> str:
         if m["script"] is not None:
             open_tag = _ATTR_RE.sub(self._attr, m["script"])
+            if (
+                re.search(r"(?<![\w-])src\s*=", open_tag, re.I)
+                and not re.search(r"(?<![\w-])crossorigin\b", open_tag, re.I)
+                and not open_tag.endswith("/>")
+            ):
+                open_tag = open_tag[:-1] + ' crossorigin="anonymous">'
             body = self.js(m["body"]) if _is_js(m["script"]) else m["body"]
             return open_tag + body + m["close"]
         return _ATTR_RE.sub(self._attr, m["tag"])

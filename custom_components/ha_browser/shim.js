@@ -17,7 +17,7 @@
   function toProxy(input) {
     var s;
     try { s = String(input); } catch (e) { return input; }
-    if (!s || s.charAt(0) === "#" || SKIP.test(s) || inProxy(s)) return input;
+    if (!s || s.charAt(0) === "#" || s.indexOf("[object ") === 0 || SKIP.test(s) || inProxy(s)) return input;
     var u;
     try { u = new URL(s, BASE); } catch (e) { return input; }
     var p = u.protocol;
@@ -385,7 +385,7 @@
         return o.apply(console, arguments);
       };
     });
-    log("info", "shim v0.1.6 active for " + REAL);
+    log("info", "shim v0.1.8 active for " + REAL);
   });
 
   function snapshot(ms) {

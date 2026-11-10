@@ -1,5 +1,5 @@
 /* HA Browser panel: tabs, address bar and bookmarks around sandboxed proxy iframes. */
-const PANEL_VERSION = "0.1.6";
+const PANEL_VERSION = "0.1.8";
 const LS_TABS = "ha_browser_tabs_v1";
 const LS_BM = "ha_browser_bookmarks_v1";
 const SANDBOX =
@@ -24,7 +24,7 @@ button:hover { background:var(--secondary-background-color); }
 .omni:focus { border-color:var(--primary-color); }
 .progress { height:2px; background:transparent; } .progress.on { background:var(--primary-color); animation:pulse 1s infinite alternate; }
 @keyframes pulse { from{opacity:.25} to{opacity:1} }
-.content { position:relative; flex:1; min-height:0; }
+.content { position:relative; flex:1; min-height:160px; }
 iframe { position:absolute; inset:0; width:100%; height:100%; border:0; background:#fff; }
 iframe.hidden, .home.hidden { display:none; }
 .home { position:absolute; inset:0; overflow:auto; padding:32px 16px; box-sizing:border-box; }
@@ -56,6 +56,7 @@ class HaBrowserPanel extends HTMLElement {
     this._nextId = 1;
     this._logs = [];
     this._onMessage = this._onMessage.bind(this);
+    this._onResize = () => this._sizeHost();
   }
 
   set hass(hass) {
@@ -63,12 +64,28 @@ class HaBrowserPanel extends HTMLElement {
     this._hass = hass;
     if (first) this._init();
   }
-  set narrow(v) { v ? this.setAttribute("narrow", "") : this.removeAttribute("narrow"); }
+  set narrow(v) { v ? this.setAttribute("narrow", "") : this.removeAttribute("narrow"); this._sizeHost(); }
   set panel(_p) {}
 
-  connectedCallback() { window.addEventListener("message", this._onMessage); }
+  connectedCallback() {
+    window.addEventListener("message", this._onMessage);
+    window.addEventListener("resize", this._onResize);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", this._onResize);
+    this._sizeHost();
+    requestAnimationFrame(() => this._sizeHost());
+    setTimeout(() => this._sizeHost(), 400);
+  }
+
+  // The panel host gets no definite height from Home Assistant, so size it to the viewport.
+  _sizeHost() {
+    const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    const top = Math.max(this.getBoundingClientRect().top, 0);
+    this.style.height = Math.max(240, Math.floor(vh - top)) + "px";
+  }
   disconnectedCallback() {
     window.removeEventListener("message", this._onMessage);
+    window.removeEventListener("resize", this._onResize);
+    if (window.visualViewport) window.visualViewport.removeEventListener("resize", this._onResize);
     clearInterval(this._keepalive);
     if (this._ro) this._ro.disconnect();
     clearInterval(this._watchdog);
@@ -112,6 +129,7 @@ class HaBrowserPanel extends HTMLElement {
     this._frames = $.querySelector(".frames");
     this._progress = $.querySelector(".progress");
     this._content = $.querySelector(".content");
+    this._sizeHost();
     this._dbg = $.querySelector(".dbg");
     this._dbgLog = $.querySelector(".dbglog");
     this._log("info", `panel v${PANEL_VERSION} | ${navigator.userAgent.slice(0, 100)}`);
@@ -239,6 +257,8 @@ class HaBrowserPanel extends HTMLElement {
 
   _activate(id) {
     this._active = id;
+    const act = this._tab(id);
+    if (act && act.hb) { act.hb = Date.now(); act.frozen = false; } // grace period after switching
     this._tabs.forEach((t) => t.iframe.classList.toggle("hidden", t.id !== id || !t.url));
     this._renderTabs();
     this._renderHome();
@@ -379,7 +399,7 @@ class HaBrowserPanel extends HTMLElement {
   _checkFrozen() {
     const now = Date.now();
     this._tabs.forEach((t) => {
-      if (!t.url || !t.hb) return;
+      if (!t.url || !t.hb || t.id !== this._active || document.hidden) return; // hidden frames are throttled by the browser
       const gap = now - t.hb;
       if (gap > 7000 && !t.frozen) {
         t.frozen = true;
@@ -404,7 +424,7 @@ class HaBrowserPanel extends HTMLElement {
   }
 
   _fit(tab) {
-    const cw = this._content.clientWidth, ch = this._content.clientHeight;
+    const cw = this._content.clientWidth, ch = Math.max(this._content.clientHeight, 160);
     if (!tab.fitW || !cw) return;
     if (tab.fitW <= cw * 1.02) { this._unfit(tab); return; }
     const scale = Math.max(cw / tab.fitW, 0.35);
